@@ -215,6 +215,75 @@
             color: #000;
             border-color: transparent;
         }
+
+        /* Booking Admin Panel */
+        .admin-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 200;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .admin-overlay.open {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .admin-modal {
+            width: 100%;
+            max-width: 56rem;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+            transform: translateY(12px);
+            transition: transform 0.3s ease;
+        }
+
+        .admin-overlay.open .admin-modal {
+            transform: translateY(0);
+        }
+
+        .admin-table-wrap {
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+        }
+
+        .admin-table-wrap::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .admin-table-wrap::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 999px;
+        }
+
+        .admin-table th {
+            position: sticky;
+            top: 0;
+            background: rgba(10, 10, 15, 0.95);
+            backdrop-filter: blur(8px);
+            z-index: 1;
+        }
+
+        .admin-row-cancel {
+            color: rgba(239, 68, 68, 0.8);
+            transition: color 0.2s ease;
+            cursor: pointer;
+        }
+
+        .admin-row-cancel:hover {
+            color: #ef4444;
+        }
     </style>
 </head>
 
@@ -792,6 +861,12 @@
                     renderCalendar();
                 });
 
+                window.addEventListener('castasoft:bookings-updated', function () {
+                    try { bookings = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { bookings = []; }
+                    renderCalendar();
+                    renderSlots();
+                });
+
                 // Init
                 bookingTimezone.textContent = RULES.timezone;
                 slotDurationLabel.textContent = RULES.durationMinutes + ' minutes';
@@ -1102,6 +1177,9 @@
             <div class="text-white/30 text-xs">
                 <a href="https://www.privacypolicygenerator.org/live.php?token=0835258388174210481835" target="_blank"
                     class="text-white/30 text-xs">Privacy Policy</a>
+                <a href="#" id="btn-open-admin" aria-label="Manage bookings"
+                    class="text-xs text-transparent opacity-0 select-none" tabindex="-1">Manage
+                    bookings</a>
                 <br>
                 <br>
                 © 2026 CAST/|SOFT. All rights reserved. <br>
@@ -1580,6 +1658,164 @@
         }
 
         drawMap();
+    </script>
+
+    <!-- Booking Admin Panel -->
+    <div id="admin-overlay" class="admin-overlay">
+        <div class="admin-modal glass-card rounded-[2rem] overflow-hidden">
+            <div class="flex items-center justify-between px-8 py-6 border-b border-white/5">
+                <div>
+                    <span class="text-[10px] uppercase tracking-[0.3em] text-orange-400 font-bold">Admin</span>
+                    <h3 class="text-xl font-bold mt-1">Consultation bookings</h3>
+                    <p class="text-xs text-white/40 mt-1">Stored locally in this browser · <span
+                            id="admin-count">0</span> total</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <button id="btn-export-csv" type="button"
+                        class="px-4 py-2 rounded-xl border border-white/15 text-xs font-semibold text-white/70 hover:bg-white/5 transition-colors">Export
+                        CSV</button>
+                    <button id="btn-close-admin" type="button"
+                        class="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 transition-colors"
+                        aria-label="Close">&#10005;</button>
+                </div>
+            </div>
+            <div class="admin-table-wrap p-6">
+                <div id="admin-empty" class="text-center py-16 text-white/30 text-sm">No bookings yet. Book a
+                    consultation and it will appear here.</div>
+                <table id="admin-table" class="w-full text-left text-sm hidden">
+                    <thead>
+                        <tr class="text-[10px] uppercase tracking-wider text-white/40 font-bold">
+                            <th class="pb-3 pr-3">Date</th>
+                            <th class="pb-3 pr-3">Time</th>
+                            <th class="pb-3 pr-3">Name</th>
+                            <th class="pb-3 pr-3">Email</th>
+                            <th class="pb-3 pr-3">WhatsApp</th>
+                            <th class="pb-3 pr-3">Notes</th>
+                            <th class="pb-3"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="admin-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ===== Booking Admin Panel =====
+        (function () {
+            const STORAGE_KEY = 'castasoft_bookings';
+            const overlay = document.getElementById('admin-overlay');
+            const tbody = document.getElementById('admin-tbody');
+            const table = document.getElementById('admin-table');
+            const empty = document.getElementById('admin-empty');
+            const count = document.getElementById('admin-count');
+
+            function getBookings() {
+                try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { return []; }
+            }
+
+            function saveBookings(list) {
+                try { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); } catch (e) {}
+                window.dispatchEvent(new CustomEvent('castasoft:bookings-updated'));
+            }
+
+            function render() {
+                const bookings = getBookings();
+                tbody.innerHTML = '';
+                count.textContent = bookings.length;
+                const showTable = bookings.length > 0;
+                table.classList.toggle('hidden', !showTable);
+                empty.classList.toggle('hidden', showTable);
+                bookings.slice().sort(function (a, b) { return (a.date + a.start).localeCompare(b.date + b.start); })
+                    .forEach(function (b) {
+                        const tr = document.createElement('tr');
+                        tr.className = 'border-b border-white/5 align-top';
+                        const cells = [b.date, b.start, b.name || '-', b.email || '-', b.whatsapp || '-', b.notes || '-'];
+                        cells.forEach(function (val) {
+                            const td = document.createElement('td');
+                            td.className = 'py-3 pr-3 text-white/70 text-xs';
+                            td.textContent = val;
+                            tr.appendChild(td);
+                        });
+                        const tdBtn = document.createElement('td');
+                        tdBtn.className = 'py-3 text-right';
+                        const btn = document.createElement('button');
+                        btn.type = 'button';
+                        btn.textContent = 'Cancel';
+                        btn.className = 'admin-row-cancel text-xs font-semibold';
+                        btn.addEventListener('click', function () {
+                            if (!window.confirm('Cancel this booking? The slot will open up again.')) return;
+                            const list = getBookings().filter(function (x) { return x.id !== b.id; });
+                            saveBookings(list);
+                            render();
+                        });
+                        tdBtn.appendChild(btn);
+                        tr.appendChild(tdBtn);
+                        tbody.appendChild(tr);
+                    });
+            }
+
+            function exportCSV() {
+                const bookings = getBookings();
+                if (!bookings.length) return;
+                const headers = ['date', 'start', 'duration', 'timezone', 'name', 'email', 'whatsapp', 'notes', 'created_at'];
+                const esc = function (v) {
+                    const s = String(v == null ? '' : v);
+                    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+                };
+                const rows = bookings.map(function (b) {
+                    return [b.date, b.start, b.duration, b.timezone, b.name, b.email, b.whatsapp, b.notes, b.createdAt]
+                        .map(esc).join(',');
+                });
+                const csv = '\ufeff' + headers.join(',') + '\n' + rows.join('\n');
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'castasoft-bookings-' + new Date().toISOString().slice(0, 10) + '.csv';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+
+            document.getElementById('btn-open-admin').addEventListener('click', function (e) {
+                e.preventDefault();
+                render();
+                overlay.classList.add('open');
+                document.body.style.overflow = 'hidden';
+            });
+            document.addEventListener('keydown', function (e) {
+                if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'B' || e.key === 'b')) {
+                    e.preventDefault();
+                    if (overlay.classList.contains('open')) {
+                        overlay.classList.remove('open');
+                        document.body.style.overflow = '';
+                    } else {
+                        render();
+                        overlay.classList.add('open');
+                        document.body.style.overflow = 'hidden';
+                    }
+                }
+            });
+            document.getElementById('btn-close-admin').addEventListener('click', function () {
+                overlay.classList.remove('open');
+                document.body.style.overflow = '';
+            });
+            overlay.addEventListener('click', function (e) {
+                if (e.target === overlay) {
+                    overlay.classList.remove('open');
+                    document.body.style.overflow = '';
+                }
+            });
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape') {
+                    overlay.classList.remove('open');
+                    document.body.style.overflow = '';
+                }
+            });
+            document.getElementById('btn-export-csv').addEventListener('click', exportCSV);
+        })();
     </script>
 </body>
 
