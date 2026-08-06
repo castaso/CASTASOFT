@@ -600,6 +600,15 @@
                 };
 
                 const STORAGE_KEY = 'castasoft_bookings';
+
+                // Telegram notification config.
+                // Fill in botToken (from @BotFather) and chatId (your admin chat id,
+                // get it from @userinfobot). Your admin account must press "Start"
+                // on the bot before messages will arrive.
+                window.CASTASOFT_TELEGRAM = {
+                    botToken: '8948129181:AAG0542po-ipf9KYJZH6JET2d3t1K_lF7oU',
+                    chatId: '7670534657'
+                };
                 let bookings = [];
                 try { bookings = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { bookings = []; }
 
@@ -822,6 +831,7 @@
                     bookings.push(booking);
                     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(bookings)); } catch (e) {}
                     renderConfirm(booking);
+                    notifyTelegram(bookingMessage(booking));
                     inputName.value = '';
                     inputEmail.value = '';
                     inputWhatsApp.value = '';
@@ -836,6 +846,34 @@
                 const confirmDateLabel = document.getElementById('confirm-date-label');
                 const confirmDetailsLabel = document.getElementById('confirm-details-label');
                 const confirmWhatsAppLabel = document.getElementById('confirm-whatsapp-label');
+
+                function bookingMessage(b) {
+                    const d = new Date(b.date + 'T00:00:00');
+                    const parts = b.start.split(':');
+                    return 'New consultation booking\n\n' +
+                        'Name: ' + (b.name || '-') + '\n' +
+                        'Email: ' + (b.email || '-') + '\n' +
+                        'WhatsApp: ' + (b.whatsapp || '-') + '\n\n' +
+                        'Date: ' + MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear() + '\n' +
+                        'Time: ' + fmtTime(parts[0], parts[1]) + ' (' + b.duration + ' min)\n' +
+                        'Timezone: ' + (b.timezone || '-') + '\n' +
+                        (b.notes ? '\nNotes: ' + b.notes : '');
+                }
+
+                function notifyTelegram(text) {
+                    const cfg = window.CASTASOFT_TELEGRAM;
+                    if (!cfg || !cfg.botToken || !cfg.chatId) return;
+                    if (typeof fetch !== 'function') return;
+                    try {
+                        fetch('https://api.telegram.org/bot' + cfg.botToken + '/sendMessage', {
+                            method: 'POST',
+                            mode: 'no-cors',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: 'chat_id=' + encodeURIComponent(cfg.chatId) + '&text=' +
+                                encodeURIComponent(text)
+                        }).catch(function () {});
+                    } catch (e) {}
+                }
 
                 function renderConfirm(b) {
                     const d = new Date(b.date + 'T00:00:00');
