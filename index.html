@@ -601,6 +601,11 @@
 
                 const STORAGE_KEY = 'castasoft_bookings';
 
+                // Shared persistence API. Set baseUrl to your deployed worker URL,
+                // e.g. https://castasoft-bookings.<account>.workers.dev
+                // When empty, bookings fall back to this browser's localStorage.
+                window.CASTASOFT_API = { baseUrl: 'https://castasoft-bookings.castasoft.workers.dev' };
+
                 // Telegram notification config.
                 // Fill in botToken (from @BotFather) and chatId (your admin chat id,
                 // get it from @userinfobot). Your admin account must press "Start"
@@ -610,7 +615,28 @@
                     chatId: '7670534657'
                 };
                 let bookings = [];
-                try { bookings = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { bookings = []; }
+
+                function apiConfigured() {
+                    return !!(window.CASTASOFT_API && window.CASTASOFT_API.baseUrl);
+                }
+
+                function loadBookings(done) {
+                    if (apiConfigured()) {
+                        fetch(window.CASTASOFT_API.baseUrl + '/bookings', { method: 'GET' })
+                            .then(function (r) { return r.json(); })
+                            .then(function (data) {
+                                bookings = (data && Array.isArray(data.bookings)) ? data.bookings : [];
+                                if (done) done();
+                            })
+                            .catch(function () {
+                                bookings = [];
+                                if (done) done();
+                            });
+                    } else {
+                        try { bookings = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { bookings = []; }
+                        if (done) done();
+                    }
+                }
 
                 const calTitle = document.getElementById('cal-title');
                 const calGrid = document.getElementById('calendar-grid');
@@ -791,6 +817,32 @@
                 inputEmail.addEventListener('input', function () { detailsError.classList.add('hidden'); });
                 inputWhatsApp.addEventListener('input', function () { detailsError.classList.add('hidden'); });
 
+                function saveBookingToStore(booking, onSuccess, onTaken) {
+                    if (apiConfigured()) {
+                        fetch(window.CASTASOFT_API.baseUrl + '/bookings', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(booking)
+                        }).then(function (r) {
+                            if (r.status === 409) { onTaken(); return; }
+                            if (r.status === 200) {
+                                return r.json().then(function (data) {
+                                    onSuccess(data.booking || booking);
+                                });
+                            }
+                            detailsError.textContent = 'Could not save your booking. Please try again.';
+                            detailsError.classList.remove('hidden');
+                        }).catch(function () {
+                            detailsError.textContent = 'Network error saving your booking. Please try again.';
+                            detailsError.classList.remove('hidden');
+                        });
+                    } else {
+                        bookings.push(booking);
+                        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(bookings)); } catch (e) {}
+                        onSuccess(booking);
+                    }
+                }
+
                 document.getElementById('btn-details-back').addEventListener('click', function () {
                     showStep('select');
                 });
@@ -828,19 +880,23 @@
                         timezone: RULES.timezone,
                         createdAt: new Date().toISOString()
                     };
-                    bookings.push(booking);
-                    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(bookings)); } catch (e) {}
-                    renderConfirm(booking);
-                    notifyTelegram(bookingMessage(booking));
-                    inputName.value = '';
-                    inputEmail.value = '';
-                    inputWhatsApp.value = '';
-                    inputNotes.value = '';
-                    selectedSlot = null;
-                    selectedDate = null;
-                    renderCalendar();
-                    renderSlots();
-                    showStep('confirm');
+                    saveBookingToStore(booking, function (saved) {
+                        renderConfirm(saved);
+                        notifyTelegram(bookingMessage(saved));
+                        inputName.value = '';
+                        inputEmail.value = '';
+                        inputWhatsApp.value = '';
+                        inputNotes.value = '';
+                        selectedSlot = null;
+                        selectedDate = null;
+                        renderCalendar();
+                        renderSlots();
+                        showStep('confirm');
+                    }, function () {
+                        detailsError.textContent = 'This time slot was just booked by someone else. Please go back and pick another.';
+                        detailsError.classList.remove('hidden');
+                        loadBookings(function () { renderCalendar(); renderSlots(); });
+                    });
                 });
 
                 const confirmDateLabel = document.getElementById('confirm-date-label');
@@ -900,9 +956,7 @@
                 });
 
                 window.addEventListener('castasoft:bookings-updated', function () {
-                    try { bookings = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { bookings = []; }
-                    renderCalendar();
-                    renderSlots();
+                    loadBookings(function () { renderCalendar(); renderSlots(); });
                 });
 
                 // Init
@@ -910,9 +964,17 @@
                 slotDurationLabel.textContent = RULES.durationMinutes + ' minutes';
                 bookingHoursLabel.textContent = fmtTime(String(RULES.startHour).padStart(2, '0'), '00') + ' - ' +
                     fmtTime(String(RULES.endHour).padStart(2, '0'), '00');
-                renderCalendar();
-                renderSlots();
-                showStep('select');
+                loadBookings(function () {
+                    renderCalendar();
+                    renderSlots();
+                    showStep('select');
+                });
+
+                if (apiConfigured()) {
+                    setInterval(function () {
+                        loadBookings(function () { renderCalendar(); renderSlots(); });
+                    }, 30000);
+                }
             })();
         </script>
         </main>
@@ -1709,6 +1771,9 @@
                             id="admin-count">0</span> total</p>
                 </div>
                 <div class="flex items-center gap-3">
+                    <button id="btn-import-local" type="button"
+                        class="hidden px-4 py-2 rounded-xl border border-purple-500/40 text-xs font-semibold text-purple-300 hover:bg-purple-500/10 transition-colors">Import
+                        stored bookings</button>
                     <button id="btn-export-csv" type="button"
                         class="px-4 py-2 rounded-xl border border-white/15 text-xs font-semibold text-white/70 hover:bg-white/5 transition-colors">Export
                         CSV</button>
@@ -1748,73 +1813,175 @@
             const empty = document.getElementById('admin-empty');
             const count = document.getElementById('admin-count');
 
-            function getBookings() {
-                try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { return []; }
+            function apiConfigured() {
+                return !!(window.CASTASOFT_API && window.CASTASOFT_API.baseUrl);
             }
 
-            function saveBookings(list) {
-                try { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); } catch (e) {}
+            function getBookings(cb) {
+                if (apiConfigured()) {
+                    fetch(window.CASTASOFT_API.baseUrl + '/bookings', { method: 'GET' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (data) { cb((data && Array.isArray(data.bookings)) ? data.bookings : []); })
+                        .catch(function () { cb([]); });
+                } else {
+                    let list = [];
+                    try { list = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { list = []; }
+                    cb(list);
+                }
+            }
+
+            function notifyWidget() {
                 window.dispatchEvent(new CustomEvent('castasoft:bookings-updated'));
             }
 
-            function render() {
-                const bookings = getBookings();
-                tbody.innerHTML = '';
-                count.textContent = bookings.length;
-                const showTable = bookings.length > 0;
-                table.classList.toggle('hidden', !showTable);
-                empty.classList.toggle('hidden', showTable);
-                bookings.slice().sort(function (a, b) { return (a.date + a.start).localeCompare(b.date + b.start); })
-                    .forEach(function (b) {
-                        const tr = document.createElement('tr');
-                        tr.className = 'border-b border-white/5 align-top';
-                        const cells = [b.date, b.start, b.name || '-', b.email || '-', b.whatsapp || '-', b.notes || '-'];
-                        cells.forEach(function (val) {
-                            const td = document.createElement('td');
-                            td.className = 'py-3 pr-3 text-white/70 text-xs';
-                            td.textContent = val;
-                            tr.appendChild(td);
+            function saveBookings(list, cb) {
+                try { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); } catch (e) {}
+                notifyWidget();
+                if (cb) cb();
+            }
+
+            function localStoredBookings() {
+                let list = [];
+                try { list = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { list = []; }
+                return list;
+            }
+
+            function updateImportButton() {
+                const btn = document.getElementById('btn-import-local');
+                if (!apiConfigured()) { btn.classList.add('hidden'); return; }
+                const local = localStoredBookings();
+                if (!local.length) { btn.classList.add('hidden'); return; }
+                getBookings(function (server) {
+                    const serverSlots = new Set(server.map(function (b) { return b.date + 'T' + b.start; }));
+                    const pending = local.filter(function (b) { return !serverSlots.has(b.date + 'T' + b.start); });
+                    if (pending.length) {
+                        btn.textContent = 'Import ' + pending.length + ' stored booking' + (pending.length > 1 ? 's' : '');
+                        btn.classList.remove('hidden');
+                    } else {
+                        btn.classList.add('hidden');
+                    }
+                });
+            }
+
+            document.getElementById('btn-import-local').addEventListener('click', function () {
+                const btn = this;
+                const local = localStoredBookings();
+                if (!local.length) return;
+                btn.disabled = true;
+                getBookings(function (server) {
+                    const serverSlots = new Set(server.map(function (b) { return b.date + 'T' + b.start; }));
+                    const pending = local.filter(function (b) { return !serverSlots.has(b.date + 'T' + b.start); });
+                    if (!pending.length) {
+                        try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+                        btn.disabled = false;
+                        render();
+                        return;
+                    }
+                    let done = 0;
+                    let failed = 0;
+                    pending.forEach(function (b) {
+                        const payload = {
+                            name: b.name,
+                            email: b.email,
+                            whatsapp: b.whatsapp,
+                            notes: b.notes,
+                            date: b.date,
+                            start: b.start,
+                            duration: b.duration,
+                            timezone: b.timezone
+                        };
+                        fetch(window.CASTASOFT_API.baseUrl + '/bookings', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        }).then(function (r) {
+                            if (r.status !== 200 && r.status !== 409) failed++;
+                        }).catch(function () {
+                            failed++;
+                        }).then(function () {
+                            done++;
+                            if (done === pending.length) {
+                                if (failed === 0) {
+                                    try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+                                }
+                                btn.disabled = false;
+                                notifyWidget();
+                                render();
+                            }
                         });
-                        const tdBtn = document.createElement('td');
-                        tdBtn.className = 'py-3 text-right';
-                        const btn = document.createElement('button');
-                        btn.type = 'button';
-                        btn.textContent = 'Cancel';
-                        btn.className = 'admin-row-cancel text-xs font-semibold';
-                        btn.addEventListener('click', function () {
-                            if (!window.confirm('Cancel this booking? The slot will open up again.')) return;
-                            const list = getBookings().filter(function (x) { return x.id !== b.id; });
-                            saveBookings(list);
-                            render();
-                        });
-                        tdBtn.appendChild(btn);
-                        tr.appendChild(tdBtn);
-                        tbody.appendChild(tr);
                     });
+                });
+            });
+
+            function render() {
+                getBookings(function (bookings) {
+                    tbody.innerHTML = '';
+                    count.textContent = bookings.length;
+                    const showTable = bookings.length > 0;
+                    table.classList.toggle('hidden', !showTable);
+                    empty.classList.toggle('hidden', showTable);
+                    bookings.slice().sort(function (a, b) { return (a.date + a.start).localeCompare(b.date + b.start); })
+                        .forEach(function (b) {
+                            const tr = document.createElement('tr');
+                            tr.className = 'border-b border-white/5 align-top';
+                            const cells = [b.date, b.start, b.name || '-', b.email || '-', b.whatsapp || '-', b.notes || '-'];
+                            cells.forEach(function (val) {
+                                const td = document.createElement('td');
+                                td.className = 'py-3 pr-3 text-white/70 text-xs';
+                                td.textContent = val;
+                                tr.appendChild(td);
+                            });
+                            const tdBtn = document.createElement('td');
+                            tdBtn.className = 'py-3 text-right';
+                            const btn = document.createElement('button');
+                            btn.type = 'button';
+                            btn.textContent = 'Cancel';
+                            btn.className = 'admin-row-cancel text-xs font-semibold';
+                            btn.addEventListener('click', function () {
+                                if (!window.confirm('Cancel this booking? The slot will open up again.')) return;
+                                if (apiConfigured()) {
+                                    fetch(window.CASTASOFT_API.baseUrl + '/bookings/' + encodeURIComponent(b.id), { method: 'DELETE' })
+                                        .then(function (r) {
+                                            if (r.ok) { notifyWidget(); render(); }
+                                        })
+                                        .catch(function () {});
+                                } else {
+                                    let list = [];
+                                    try { list = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { list = []; }
+                                    saveBookings(list.filter(function (x) { return x.id !== b.id; }), render);
+                                }
+                            });
+                            tdBtn.appendChild(btn);
+                            tr.appendChild(tdBtn);
+                            tbody.appendChild(tr);
+                        });
+                    updateImportButton();
+                });
             }
 
             function exportCSV() {
-                const bookings = getBookings();
-                if (!bookings.length) return;
-                const headers = ['date', 'start', 'duration', 'timezone', 'name', 'email', 'whatsapp', 'notes', 'created_at'];
-                const esc = function (v) {
-                    const s = String(v == null ? '' : v);
-                    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-                };
-                const rows = bookings.map(function (b) {
-                    return [b.date, b.start, b.duration, b.timezone, b.name, b.email, b.whatsapp, b.notes, b.createdAt]
-                        .map(esc).join(',');
+                getBookings(function (bookings) {
+                    if (!bookings.length) return;
+                    const headers = ['date', 'start', 'duration', 'timezone', 'name', 'email', 'whatsapp', 'notes', 'created_at'];
+                    const esc = function (v) {
+                        const s = String(v == null ? '' : v);
+                        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+                    };
+                    const rows = bookings.map(function (b) {
+                        return [b.date, b.start, b.duration, b.timezone, b.name, b.email, b.whatsapp, b.notes, b.createdAt]
+                            .map(esc).join(',');
+                    });
+                    const csv = '\ufeff' + headers.join(',') + '\n' + rows.join('\n');
+                    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'castasoft-bookings-' + new Date().toISOString().slice(0, 10) + '.csv';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
                 });
-                const csv = '\ufeff' + headers.join(',') + '\n' + rows.join('\n');
-                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'castasoft-bookings-' + new Date().toISOString().slice(0, 10) + '.csv';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
             }
 
             document.getElementById('btn-open-admin').addEventListener('click', function (e) {

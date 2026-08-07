@@ -1,0 +1,10 @@
+name = "castasoft-bookings"
+main = "worker.js"
+compatibility_date = "2025-08-01"
+
+kv_namespaces = [
+  { binding = "BOOKINGS_KV", id = "c0312d3946ab40fabd534afcdfc2bda4" }
+]
+
+[vars]
+ALLOWED_ORIGINS = "https://castaso.github.io"
