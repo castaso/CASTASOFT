@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>CAST/|SOFT - Enterprise Intelligence</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <style>
         body {
             font-family: Cambria, Garamond;
@@ -621,6 +622,14 @@
                 // e.g. https://castasoft-bookings.<account>.workers.dev
                 // When empty, bookings fall back to this browser's localStorage.
                 window.CASTASOFT_API = { baseUrl: 'https://castasoft-bookings.castasoft.workers.dev' };
+
+                // Google OAuth for the admin panel. Create a client ID at
+                // console.cloud.google.com (OAuth consent screen + OAuth client ID,
+                // type "Web application"). Add this site's origin as an authorized
+                // JavaScript origin (https://castasoft.xo.je). Set the same client ID
+                // and the allowed admin emails in the worker's GOOGLE_CLIENT_ID and
+                // ADMIN_EMAILS variables.
+                window.CASTASOFT_GOOGLE_CLIENT_ID = 'REPLACE_WITH_YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
 
                 // Telegram notification config.
                 // Fill in botToken (from @BotFather) and chatId (your admin chat id,
@@ -1818,18 +1827,33 @@
                             id="admin-count">0</span> total</p>
                 </div>
                 <div class="flex items-center gap-3">
+                    <span id="admin-email" class="hidden text-[10px] text-white/40"></span>
+                    <button id="btn-signout" type="button"
+                        class="hidden px-4 py-2 rounded-xl border border-white/15 text-xs font-semibold text-white/70 hover:bg-white/5 transition-colors">Sign
+                        out</button>
                     <button id="btn-import-local" type="button"
                         class="hidden px-4 py-2 rounded-xl border border-purple-500/40 text-xs font-semibold text-purple-300 hover:bg-purple-500/10 transition-colors">Import
                         stored bookings</button>
                     <button id="btn-export-csv" type="button"
-                        class="px-4 py-2 rounded-xl border border-white/15 text-xs font-semibold text-white/70 hover:bg-white/5 transition-colors">Export
+                        class="hidden px-4 py-2 rounded-xl border border-white/15 text-xs font-semibold text-white/70 hover:bg-white/5 transition-colors">Export
                         CSV</button>
                     <button id="btn-close-admin" type="button"
                         class="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 transition-colors"
                         aria-label="Close">&#10005;</button>
                 </div>
             </div>
-            <div class="admin-table-wrap p-6">
+            <div id="admin-login" class="p-8">
+                <div class="text-center py-10">
+                    <span class="text-[10px] uppercase tracking-[0.3em] text-orange-400 font-bold">Restricted</span>
+                    <h3 class="text-lg font-bold mt-3">Sign in to manage bookings</h3>
+                    <p class="text-xs text-white/40 mt-2">This area is for CAST/|SOFT staff only. Use your Google
+                        account to continue.</p>
+                    <div id="google-signin-button" class="mt-8 flex justify-center"></div>
+                    <p id="admin-login-msg" class="text-xs mt-4 hidden"></p>
+                </div>
+            </div>
+            <div id="admin-main" class="hidden">
+                <div class="admin-table-wrap p-6">
                 <div id="admin-empty" class="text-center py-16 text-white/30 text-sm">No bookings yet. Book a
                     consultation and it will appear here.</div>
                 <table id="admin-table" class="w-full text-left text-sm hidden">
@@ -1863,6 +1887,7 @@
                     <p id="holiday-msg" class="text-xs mt-2 hidden"></p>
                 </div>
             </div>
+            </div>
         </div>
     </div>
 
@@ -1880,6 +1905,133 @@
             const holidayList = document.getElementById('holiday-list');
             const holidayEmpty = document.getElementById('holiday-empty');
             const holidayMsg = document.getElementById('holiday-msg');
+            const adminLoginView = document.getElementById('admin-login');
+            const adminMainView = document.getElementById('admin-main');
+            const googleSignInButton = document.getElementById('google-signin-button');
+            const adminLoginMsg = document.getElementById('admin-login-msg');
+            const adminEmailLabel = document.getElementById('admin-email');
+            const btnSignout = document.getElementById('btn-signout');
+            const btnExportCsv = document.getElementById('btn-export-csv');
+            const ADMIN_SESSION_KEY = 'castasoft_admin_session';
+
+            let adminEmail = '';
+            let gsiInitialized = false;
+
+            function getAdminToken() {
+                try { return sessionStorage.getItem(ADMIN_SESSION_KEY) || ''; } catch (e) { return ''; }
+            }
+
+            function setAdminToken(token) {
+                try {
+                    if (token) sessionStorage.setItem(ADMIN_SESSION_KEY, token);
+                    else sessionStorage.removeItem(ADMIN_SESSION_KEY);
+                } catch (e) {}
+            }
+
+            function authHeaders(extra) {
+                const h = Object.assign({}, extra || {});
+                const token = getAdminToken();
+                if (token) h['Authorization'] = 'Bearer ' + token;
+                return h;
+            }
+
+            function showLoginMsg(text, isError) {
+                adminLoginMsg.textContent = text;
+                adminLoginMsg.style.color = isError ? '#f87171' : 'rgba(255,255,255,0.4)';
+                adminLoginMsg.classList.remove('hidden');
+            }
+
+            function initGoogleSignIn() {
+                const clientId = (window.CASTASOFT_GOOGLE_CLIENT_ID || '').trim();
+                if (!clientId || clientId.indexOf('REPLACE_WITH_YOUR') === 0) {
+                    showLoginMsg('Google Sign-In is not configured yet. Set CASTASOFT_GOOGLE_CLIENT_ID in the page.', true);
+                    return;
+                }
+                if (typeof google === 'undefined' || !google.accounts) {
+                    showLoginMsg('Loading sign-in...', false);
+                    setTimeout(initGoogleSignIn, 250);
+                    return;
+                }
+                adminLoginMsg.classList.add('hidden');
+                if (gsiInitialized) return;
+                gsiInitialized = true;
+                google.accounts.id.initialize({
+                    client_id: clientId,
+                    callback: handleGoogleCredential,
+                    auto_select: false
+                });
+                google.accounts.id.renderButton(googleSignInButton, {
+                    type: 'standard',
+                    theme: 'outline',
+                    size: 'large',
+                    text: 'signin_with',
+                    shape: 'pill'
+                });
+            }
+
+            function handleGoogleCredential(response) {
+                if (!response || !response.credential) return;
+                fetch(window.CASTASOFT_API.baseUrl + '/admin/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ credential: response.credential })
+                }).then(function (r) { return r.json(); }).then(function (data) {
+                    if (data.ok && data.token) {
+                        setAdminToken(data.token);
+                        adminEmail = data.email;
+                        showAdminMain(data.email);
+                    } else {
+                        showLoginMsg('Sign-in failed: ' + (data.error || 'Unknown error'), true);
+                    }
+                }).catch(function () {
+                    showLoginMsg('Could not reach the login service. Please try again.', true);
+                });
+            }
+
+            function showAdminLogin() {
+                adminMainView.classList.add('hidden');
+                adminLoginView.classList.remove('hidden');
+                btnSignout.classList.add('hidden');
+                btnExportCsv.classList.add('hidden');
+                adminEmailLabel.classList.add('hidden');
+                initGoogleSignIn();
+            }
+
+            function showAdminMain(email) {
+                adminEmail = email || adminEmail;
+                adminLoginView.classList.add('hidden');
+                adminMainView.classList.remove('hidden');
+                btnSignout.classList.remove('hidden');
+                btnExportCsv.classList.remove('hidden');
+                adminEmailLabel.textContent = adminEmail;
+                adminEmailLabel.classList.remove('hidden');
+                render();
+                renderHolidays();
+            }
+
+            function openAdmin() {
+                if (!apiConfigured()) {
+                    showAdminMain('');
+                    return;
+                }
+                if (!getAdminToken()) {
+                    showAdminLogin();
+                    return;
+                }
+                fetch(window.CASTASOFT_API.baseUrl + '/admin/me', {
+                    method: 'GET',
+                    headers: authHeaders()
+                }).then(function (r) { return r.json(); }).then(function (data) {
+                    if (data.ok) {
+                        showAdminMain(data.email);
+                    } else {
+                        setAdminToken('');
+                        showAdminLogin();
+                    }
+                }).catch(function () {
+                    showAdminLogin();
+                });
+            }
 
             function apiConfigured() {
                 return !!(window.CASTASOFT_API && window.CASTASOFT_API.baseUrl);
@@ -1887,7 +2039,7 @@
 
             function getBookings(cb) {
                 if (apiConfigured()) {
-                    fetch(window.CASTASOFT_API.baseUrl + '/bookings', { method: 'GET' })
+                    fetch(window.CASTASOFT_API.baseUrl + '/bookings', { method: 'GET', headers: authHeaders() })
                         .then(function (r) { return r.json(); })
                         .then(function (data) { cb((data && Array.isArray(data.bookings)) ? data.bookings : []); })
                         .catch(function () { cb([]); });
@@ -1925,7 +2077,7 @@
 
             function getHolidays(cb) {
                 if (apiConfigured()) {
-                    fetch(window.CASTASOFT_API.baseUrl + '/holidays', { method: 'GET' })
+                    fetch(window.CASTASOFT_API.baseUrl + '/holidays', { method: 'GET', headers: authHeaders() })
                         .then(function (r) { return r.json(); })
                         .then(function (data) { cb((data && Array.isArray(data.holidays)) ? data.holidays : []); })
                         .catch(function () { cb([]); });
@@ -1938,7 +2090,7 @@
                 if (apiConfigured()) {
                     fetch(window.CASTASOFT_API.baseUrl + '/holidays', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: authHeaders({ 'Content-Type': 'application/json' }),
                         body: JSON.stringify({ date: date })
                     }).then(function (r) {
                         if (r.status === 200) notifyHolidays();
@@ -1957,7 +2109,10 @@
 
             function removeHoliday(date, cb) {
                 if (apiConfigured()) {
-                    fetch(window.CASTASOFT_API.baseUrl + '/holidays/' + encodeURIComponent(date), { method: 'DELETE' })
+                    fetch(window.CASTASOFT_API.baseUrl + '/holidays/' + encodeURIComponent(date), {
+                        method: 'DELETE',
+                        headers: authHeaders()
+                    })
                         .then(function (r) {
                             if (r.ok) notifyHolidays();
                             cb(r.ok);
@@ -2080,7 +2235,7 @@
                         };
                         fetch(window.CASTASOFT_API.baseUrl + '/bookings', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: authHeaders({ 'Content-Type': 'application/json' }),
                             body: JSON.stringify(payload)
                         }).then(function (r) {
                             if (r.status !== 200 && r.status !== 409) failed++;
@@ -2128,7 +2283,10 @@
                             btn.addEventListener('click', function () {
                                 if (!window.confirm('Cancel this booking? The slot will open up again.')) return;
                                 if (apiConfigured()) {
-                                    fetch(window.CASTASOFT_API.baseUrl + '/bookings/' + encodeURIComponent(b.id), { method: 'DELETE' })
+                                    fetch(window.CASTASOFT_API.baseUrl + '/bookings/' + encodeURIComponent(b.id), {
+                                        method: 'DELETE',
+                                        headers: authHeaders()
+                                    })
                                         .then(function (r) {
                                             if (r.ok) { notifyWidget(); render(); }
                                         })
@@ -2174,8 +2332,7 @@
 
             document.getElementById('btn-open-admin').addEventListener('click', function (e) {
                 e.preventDefault();
-                render();
-                renderHolidays();
+                openAdmin();
                 overlay.classList.add('open');
                 document.body.style.overflow = 'hidden';
             });
@@ -2186,8 +2343,7 @@
                         overlay.classList.remove('open');
                         document.body.style.overflow = '';
                     } else {
-                        render();
-                        renderHolidays();
+                        openAdmin();
                         overlay.classList.add('open');
                         document.body.style.overflow = 'hidden';
                     }
@@ -2210,6 +2366,21 @@
                 }
             });
             document.getElementById('btn-export-csv').addEventListener('click', exportCSV);
+
+            btnSignout.addEventListener('click', function () {
+                const token = getAdminToken();
+                if (token && apiConfigured()) {
+                    fetch(window.CASTASOFT_API.baseUrl + '/admin/logout', {
+                        method: 'POST',
+                        headers: authHeaders()
+                    }).catch(function () {});
+                }
+                setAdminToken('');
+                adminEmail = '';
+                gsiInitialized = false;
+                googleSignInButton.innerHTML = '';
+                showAdminLogin();
+            });
 
             document.getElementById('btn-add-holiday').addEventListener('click', addHolidayFromInput);
             holidayDateInput.addEventListener('keydown', function (e) {
