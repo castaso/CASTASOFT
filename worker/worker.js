@@ -60,6 +60,20 @@ export default {
         return deleteBooking(env, decodeURIComponent(match[1]), corsHeaders);
       }
 
+      if (path === '/holidays' && request.method === 'GET') {
+        const holidays = await readHolidays(env);
+        return json({ ok: true, holidays: holidays }, 200, corsHeaders);
+      }
+
+      if (path === '/holidays' && request.method === 'POST') {
+        return addHoliday(request, env, corsHeaders);
+      }
+
+      const holidayMatch = path.match(/^\/holidays\/([^/]+)$/);
+      if (holidayMatch && request.method === 'DELETE') {
+        return removeHoliday(env, decodeURIComponent(holidayMatch[1]), corsHeaders);
+      }
+
       return json({ ok: false, error: 'Not found' }, 404, corsHeaders);
     } catch (e) {
       return json({ ok: false, error: 'Internal error' }, 500, corsHeaders);
@@ -134,6 +148,63 @@ async function deleteBooking(env, id, corsHeaders) {
   }
   await env.BOOKINGS_KV.put(KEY, JSON.stringify(next));
   return json({ ok: true }, 200, corsHeaders);
+}
+
+const HOLIDAYS_KEY = 'holidays';
+
+async function readHolidays(env) {
+  const raw = await env.BOOKINGS_KV.get(HOLIDAYS_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(function (d) { return isValidDate(d); }) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function addHoliday(request, env, corsHeaders) {
+  let body;
+  try {
+    body = await request.json();
+  } catch (e) {
+    return json({ ok: false, error: 'Invalid JSON' }, 400, corsHeaders);
+  }
+
+  const date = String(body.date || '');
+  if (!isValidDate(date)) {
+    return json({ ok: false, error: 'Invalid date' }, 400, corsHeaders);
+  }
+
+  const holidays = await readHolidays(env);
+  if (holidays.includes(date)) {
+    return json({ ok: false, error: 'Holiday already exists', code: 'HOLIDAY_EXISTS' }, 409, corsHeaders);
+  }
+
+  holidays.push(date);
+  holidays.sort();
+  await env.BOOKINGS_KV.put(HOLIDAYS_KEY, JSON.stringify(holidays));
+  return json({ ok: true, holiday: date }, 200, corsHeaders);
+}
+
+async function removeHoliday(env, date, corsHeaders) {
+  if (!isValidDate(date)) {
+    return json({ ok: false, error: 'Invalid date' }, 400, corsHeaders);
+  }
+
+  const holidays = await readHolidays(env);
+  const next = holidays.filter(function (d) { return d !== date; });
+  if (next.length === holidays.length) {
+    return json({ ok: false, error: 'Not found' }, 404, corsHeaders);
+  }
+  await env.BOOKINGS_KV.put(HOLIDAYS_KEY, JSON.stringify(next));
+  return json({ ok: true }, 200, corsHeaders);
+}
+
+function isValidDate(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const d = new Date(date + 'T00:00:00Z');
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === date;
 }
 
 function json(obj, status, cors) {

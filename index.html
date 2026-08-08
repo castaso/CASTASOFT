@@ -267,6 +267,21 @@
             border-radius: 999px;
         }
 
+        .holiday-date-input {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 0.75rem;
+            color: #fff;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.75rem;
+            color-scheme: dark;
+        }
+
+        .holiday-date-input:focus {
+            outline: none;
+            border-color: rgba(251, 146, 60, 0.5);
+        }
+
         .admin-table th {
             position: sticky;
             top: 0;
@@ -594,12 +609,13 @@
                     startHour: 9,
                     endHour: 17,
                     daysAhead: 30,
-                    closedWeekdays: [0, 6],
+                    closedWeekdays: [6],
                     closedDates: [],
                     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local'
                 };
 
                 const STORAGE_KEY = 'castasoft_bookings';
+                const HOLIDAYS_KEY = 'castasoft_holidays';
 
                 // Shared persistence API. Set baseUrl to your deployed worker URL,
                 // e.g. https://castasoft-bookings.<account>.workers.dev
@@ -615,6 +631,7 @@
                     chatId: '7670534657'
                 };
                 let bookings = [];
+                let closedDates = RULES.closedDates.slice();
 
                 function apiConfigured() {
                     return !!(window.CASTASOFT_API && window.CASTASOFT_API.baseUrl);
@@ -634,6 +651,28 @@
                             });
                     } else {
                         try { bookings = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch (e) { bookings = []; }
+                        if (done) done();
+                    }
+                }
+
+                function loadHolidays(done) {
+                    if (apiConfigured()) {
+                        fetch(window.CASTASOFT_API.baseUrl + '/holidays', { method: 'GET' })
+                            .then(function (r) { return r.json(); })
+                            .then(function (data) {
+                                closedDates = (data && Array.isArray(data.holidays)) ? data.holidays : closedDates;
+                                if (done) done();
+                            })
+                            .catch(function () {
+                                if (done) done();
+                            });
+                    } else {
+                        try {
+                            const stored = JSON.parse(localStorage.getItem(HOLIDAYS_KEY));
+                            closedDates = Array.isArray(stored) ? stored : RULES.closedDates.slice();
+                        } catch (e) {
+                            closedDates = RULES.closedDates.slice();
+                        }
                         if (done) done();
                     }
                 }
@@ -678,7 +717,7 @@
 
                 function isClosedDate(d) {
                     if (RULES.closedWeekdays.includes(d.getDay())) return true;
-                    if (RULES.closedDates.includes(dateKey(d))) return true;
+                    if (closedDates.includes(dateKey(d))) return true;
                     return false;
                 }
 
@@ -959,20 +998,28 @@
                     loadBookings(function () { renderCalendar(); renderSlots(); });
                 });
 
+                window.addEventListener('castasoft:holidays-updated', function () {
+                    loadHolidays(function () { renderCalendar(); renderSlots(); });
+                });
+
                 // Init
                 bookingTimezone.textContent = RULES.timezone;
                 slotDurationLabel.textContent = RULES.durationMinutes + ' minutes';
                 bookingHoursLabel.textContent = fmtTime(String(RULES.startHour).padStart(2, '0'), '00') + ' - ' +
                     fmtTime(String(RULES.endHour).padStart(2, '0'), '00');
                 loadBookings(function () {
-                    renderCalendar();
-                    renderSlots();
-                    showStep('select');
+                    loadHolidays(function () {
+                        renderCalendar();
+                        renderSlots();
+                        showStep('select');
+                    });
                 });
 
                 if (apiConfigured()) {
                     setInterval(function () {
-                        loadBookings(function () { renderCalendar(); renderSlots(); });
+                        loadHolidays(function () {
+                            loadBookings(function () { renderCalendar(); renderSlots(); });
+                        });
                     }, 30000);
                 }
             })();
@@ -1800,6 +1847,22 @@
                     <tbody id="admin-tbody"></tbody>
                 </table>
             </div>
+            <div class="admin-holidays-wrap p-6 pt-0">
+                <div class="border-t border-white/5 pt-6">
+                    <h4 class="text-[10px] uppercase tracking-[0.3em] text-orange-400 font-bold">Holidays</h4>
+                    <p class="text-xs text-white/40 mt-1 mb-4">Dates with no availability. Add a date to close it for
+                        bookings.</p>
+                    <div class="flex items-center gap-3 flex-wrap">
+                        <input id="holiday-date" type="date" class="holiday-date-input" aria-label="Holiday date">
+                        <button id="btn-add-holiday" type="button"
+                            class="px-4 py-2 rounded-xl bg-orange-500/20 border border-orange-400/40 text-xs font-semibold text-orange-300 hover:bg-orange-500/30 transition-colors">Add
+                            holiday</button>
+                    </div>
+                    <div id="holiday-list" class="mt-4 flex flex-wrap gap-2"></div>
+                    <p id="holiday-empty" class="text-xs text-white/30 mt-4">No holidays set.</p>
+                    <p id="holiday-msg" class="text-xs mt-2 hidden"></p>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1807,11 +1870,16 @@
         // ===== Booking Admin Panel =====
         (function () {
             const STORAGE_KEY = 'castasoft_bookings';
+            const HOLIDAYS_KEY = 'castasoft_holidays';
             const overlay = document.getElementById('admin-overlay');
             const tbody = document.getElementById('admin-tbody');
             const table = document.getElementById('admin-table');
             const empty = document.getElementById('admin-empty');
             const count = document.getElementById('admin-count');
+            const holidayDateInput = document.getElementById('holiday-date');
+            const holidayList = document.getElementById('holiday-list');
+            const holidayEmpty = document.getElementById('holiday-empty');
+            const holidayMsg = document.getElementById('holiday-msg');
 
             function apiConfigured() {
                 return !!(window.CASTASOFT_API && window.CASTASOFT_API.baseUrl);
@@ -1838,6 +1906,126 @@
                 try { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); } catch (e) {}
                 notifyWidget();
                 if (cb) cb();
+            }
+
+            function notifyHolidays() {
+                window.dispatchEvent(new CustomEvent('castasoft:holidays-updated'));
+            }
+
+            function localStoredHolidays() {
+                let list = [];
+                try { list = JSON.parse(localStorage.getItem(HOLIDAYS_KEY)) || []; } catch (e) { list = []; }
+                return list;
+            }
+
+            function saveHolidaysLocal(list) {
+                try { localStorage.setItem(HOLIDAYS_KEY, JSON.stringify(list)); } catch (e) {}
+                notifyHolidays();
+            }
+
+            function getHolidays(cb) {
+                if (apiConfigured()) {
+                    fetch(window.CASTASOFT_API.baseUrl + '/holidays', { method: 'GET' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (data) { cb((data && Array.isArray(data.holidays)) ? data.holidays : []); })
+                        .catch(function () { cb([]); });
+                } else {
+                    cb(localStoredHolidays());
+                }
+            }
+
+            function addHoliday(date, cb) {
+                if (apiConfigured()) {
+                    fetch(window.CASTASOFT_API.baseUrl + '/holidays', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ date: date })
+                    }).then(function (r) {
+                        if (r.status === 200) notifyHolidays();
+                        cb(r.status);
+                    }).catch(function () { cb(0); });
+                } else {
+                    const list = localStoredHolidays();
+                    if (!list.includes(date)) {
+                        list.push(date);
+                        list.sort();
+                        saveHolidaysLocal(list);
+                    }
+                    cb(200);
+                }
+            }
+
+            function removeHoliday(date, cb) {
+                if (apiConfigured()) {
+                    fetch(window.CASTASOFT_API.baseUrl + '/holidays/' + encodeURIComponent(date), { method: 'DELETE' })
+                        .then(function (r) {
+                            if (r.ok) notifyHolidays();
+                            cb(r.ok);
+                        })
+                        .catch(function () { cb(false); });
+                } else {
+                    saveHolidaysLocal(localStoredHolidays().filter(function (d) { return d !== date; }));
+                    cb(true);
+                }
+            }
+
+            function showHolidayMsg(text, isError) {
+                holidayMsg.textContent = text;
+                holidayMsg.style.color = isError ? '#f87171' : 'rgba(255,255,255,0.4)';
+                holidayMsg.classList.remove('hidden');
+                clearTimeout(showHolidayMsg._t);
+                showHolidayMsg._t = setTimeout(function () { holidayMsg.classList.add('hidden'); }, 4000);
+            }
+
+            function renderHolidays() {
+                getHolidays(function (holidays) {
+                    holidays = holidays.slice().sort();
+                    holidayList.innerHTML = '';
+                    holidayEmpty.classList.toggle('hidden', holidays.length > 0);
+                    holidays.forEach(function (date) {
+                        const chip = document.createElement('div');
+                        chip.className = 'flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs text-white/70';
+                        const label = document.createElement('span');
+                        label.textContent = date;
+                        chip.appendChild(label);
+                        const rm = document.createElement('button');
+                        rm.type = 'button';
+                        rm.textContent = '\u00d7';
+                        rm.className = 'text-white/40 hover:text-red-400 transition-colors font-bold';
+                        rm.setAttribute('aria-label', 'Remove holiday ' + date);
+                        rm.addEventListener('click', function () {
+                            removeHoliday(date, function (ok) {
+                                if (ok) {
+                                    showHolidayMsg('Holiday removed.', false);
+                                    renderHolidays();
+                                } else {
+                                    showHolidayMsg('Could not remove holiday.', true);
+                                }
+                            });
+                        });
+                        chip.appendChild(rm);
+                        holidayList.appendChild(chip);
+                    });
+                });
+            }
+
+            function addHolidayFromInput() {
+                const date = holidayDateInput.value;
+                if (!date) {
+                    showHolidayMsg('Choose a date first.', true);
+                    return;
+                }
+                addHoliday(date, function (status) {
+                    if (status === 200) {
+                        holidayDateInput.value = '';
+                        showHolidayMsg('Holiday added.', false);
+                        renderHolidays();
+                    } else if (status === 409) {
+                        showHolidayMsg('That date is already a holiday.', true);
+                    } else {
+                        showHolidayMsg('Could not add holiday. Please try again.', true);
+                    }
+                });
             }
 
             function localStoredBookings() {
@@ -1987,6 +2175,7 @@
             document.getElementById('btn-open-admin').addEventListener('click', function (e) {
                 e.preventDefault();
                 render();
+                renderHolidays();
                 overlay.classList.add('open');
                 document.body.style.overflow = 'hidden';
             });
@@ -1998,6 +2187,7 @@
                         document.body.style.overflow = '';
                     } else {
                         render();
+                        renderHolidays();
                         overlay.classList.add('open');
                         document.body.style.overflow = 'hidden';
                     }
@@ -2020,6 +2210,14 @@
                 }
             });
             document.getElementById('btn-export-csv').addEventListener('click', exportCSV);
+
+            document.getElementById('btn-add-holiday').addEventListener('click', addHolidayFromInput);
+            holidayDateInput.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') addHolidayFromInput();
+            });
+            holidayDateInput.min = new Date().getFullYear() + '-' +
+                String(new Date().getMonth() + 1).padStart(2, '0') + '-' +
+                String(new Date().getDate()).padStart(2, '0');
         })();
     </script>
 </body>
