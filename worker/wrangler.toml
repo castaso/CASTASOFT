@@ -7,6 +7,6 @@ kv_namespaces = [
 ]
 
 [vars]
-ALLOWED_ORIGINS = "https://castaso.github.io,https://castasoft.xo.je"
+ALLOWED_ORIGINS = "https://castaso.github.io"
 GOOGLE_CLIENT_ID = "507330631641-nvehendmjomkiks3che990ebqigubepd.apps.googleusercontent.com"
 ADMIN_EMAILS = "castasoft@gmail.com"
